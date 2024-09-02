@@ -1,0 +1,17 @@
+#!/bin/bash
+date >> /usr/aschk/cron_check.txt
+CHK=
+echo “Checking if connected to the hub”
+
+CHK=`asterisk -rx "rpt nodes 507710" | grep -c "518071"`
+echo $CHK >> /usr/aschk/cron_check.txt
+
+if [ $CHK -eq 1 ]
+then
+   echo “OK, Connected.”
+   echo “OK, connected.” >> /usr/aschk/cron_check.txt
+else
+   echo “Reconnecting.”
+   echo “Reconnecting.” >> /usr/aschk/cron_check.txt
+   asterisk -rx “rpt cmd 507710 ilink 3 518071”
+fi
