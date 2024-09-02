@@ -1,17 +1,61 @@
 #!/bin/bash
-date >> /usr/aschk/cron_check.txt
+
+# Configuration Variables - Set these before running the script
+
+# Directory path where logs and other files will be stored
+# Example: LOG_DIR="/usr/as_node_chk"
+LOG_DIR="/path/to/your/directory"  # <-- Replace with your desired path
+
+# AllStar Node IDs
+ORIGIN_NODE_ID="<orig_node>"  # <-- Replace with the origin AllStar node ID
+DEST_NODE_ID="<dest_node>"    # <-- Replace with the destination AllStar node ID
+
+# Check if LOG_DIR is set and exists
+if [[ -z "$LOG_DIR" || ! -d "$LOG_DIR" ]]; then
+  echo "ERROR: LOG_DIR is not set correctly or the directory does not exist."
+  echo "Please set LOG_DIR to a valid directory in the script."
+  exit 1
+fi
+
+# Check if ORIGIN_NODE_ID and DEST_NODE_ID are set
+if [[ -z "$ORIGIN_NODE_ID" || -z "$DEST_NODE_ID" ]]; then
+  echo "ERROR: ORIGIN_NODE_ID or DEST_NODE_ID is not set."
+  echo "Please set both ORIGIN_NODE_ID and DEST_NODE_ID in the script."
+  exit 1
+fi
+
+# Log file paths
+CRON_CHECK_FILE="$LOG_DIR/cron_check.txt"
+
+# Check if required log files exist
+if [[ ! -f "$CRON_CHECK_FILE" ]]; then
+  echo "ERROR: $CRON_CHECK_FILE does not exist."
+  echo "Please ensure that the required files are available in the LOG_DIR."
+  exit 1
+fi
+
+date >> $LOG_DIR/cron_check.txt
 CHK=
 echo “Checking if connected to the hub”
 
-CHK=`asterisk -rx "rpt nodes 507710" | grep -c "518071"`
-echo $CHK >> /usr/aschk/cron_check.txt
+CHK=`asterisk -rx "rpt nodes $ORIGIN_NODE_ID" | grep -c "$DEST_NODE_ID"`
+echo $CHK >> $LOG_DIR/cron_check.txt
 
 if [ $CHK -eq 1 ]
 then
    echo “OK, Connected.”
-   echo “OK, connected.” >> /usr/aschk/cron_check.txt
+   echo “OK, connected.” >> $LOG_DIR/cron_check.txt
 else
    echo “Reconnecting.”
-   echo “Reconnecting.” >> /usr/aschk/cron_check.txt
-   asterisk -rx “rpt cmd 507710 ilink 3 518071”
+   echo “Reconnecting.” >> $LOG_DIR/cron_check.txt
+   asterisk -rx “rpt cmd $ORIGIN_NODE_ID ilink 3 $DEST_NODE_ID”
 fi
+
+# Example of script logic:
+echo "Starting AllStar node check..."
+echo "Origin Node: $ORIGIN_NODE_ID"
+echo "Destination Node: $DEST_NODE_ID"
+
+# Add your logic here
+
+echo "Script completed successfully."
