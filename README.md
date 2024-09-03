@@ -1,11 +1,11 @@
 # Allstar Node Connection Check Script
 
-##This script serves multiple purposes:
+**This script serves multiple purposes:**
 - Check if your Allstar node that this script runs on (Origin Node) is connected to the node you want to remain connected to (Destination Node)
 - If the scripts that the nodes are not connected, it will attempt to reconnect to the Destination Node.
 - Logs the connection attempts and timestamp when they happen.
 
-##For the script to run properly, 3 things must be set in the config variables
+**For the script to run properly, 3 things must be set in the config variables**
 
 - LOG_DIR: This is the folder where the script looks for a file called cron_check.txt
 - ORIGIN_NODE_ID: This is your Allstar Node ID.
