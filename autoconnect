@@ -35,10 +35,9 @@ if [[ ! -f "$CRON_CHECK_FILE" ]]; then
 fi
 
 date >> $LOG_DIR/cron_check.txt
-CHK=
 echo “Checking if connected to the hub”
 
-CHK=`asterisk -rx "rpt nodes $ORIGIN_NODE_ID" | grep -c "$DEST_NODE_ID"`
+CHK=$(\asterisk -rx "rpt nodes $ORIGIN_NODE_ID" | grep -c "$DEST_NODE_ID")
 echo $CHK >> $LOG_DIR/cron_check.txt
 
 if [ $CHK -eq 1 ]
@@ -48,7 +47,7 @@ then
 else
    echo “Reconnecting.”
    echo “Reconnecting.” >> $LOG_DIR/cron_check.txt
-   asterisk -rx “rpt cmd $ORIGIN_NODE_ID ilink 3 $DEST_NODE_ID”
+   /usr/sbin/asterisk -rx "rpt cmd $ORIGIN_NODE_ID ilink 3 $DEST_NODE_ID"
 fi
 
 # Example of script logic:
