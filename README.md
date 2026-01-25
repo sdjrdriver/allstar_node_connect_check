@@ -14,16 +14,16 @@
 
 ### Features
 
-✓ **3-Attempt Retry System** - Automatically retries up to 3 times with state persistence
-✓ **Reconnection Verification** - Verifies reconnection actually succeeded, not just issued
-✓ **Timeout Protection** - Prevents hanging on asterisk socket issues (default 10 seconds)
-✓ **Structured Logging** - Machine-parsable logs with severity levels and metadata
-✓ **Lock File Protection** - Prevents concurrent execution
-✓ **Auto-File Creation** - Creates log directories and files automatically
-✓ **Configuration Management** - External config file support with environment variable overrides
-✓ **Input Validation** - Clear error messages for configuration issues
-✓ **Notification System** - Syslog (default) and optional email alerts
-✓ **Backward Compatible** - Works with existing v1.x installations without changes
+- **3-Attempt Retry System** - Automatically retries up to 3 times with state persistence
+- **Reconnection Verification** - Verifies reconnection actually succeeded, not just issued
+- **Timeout Protection** - Prevents hanging on asterisk socket issues (default 10 seconds)
+- **Structured Logging** - Machine-parsable logs with severity levels and metadata
+- **Lock File Protection** - Prevents concurrent execution
+- **Auto-File Creation** - Creates log directories and files automatically
+- **Configuration Management** - External config file support with environment variable overrides
+- **Input Validation** - Clear error messages for configuration issues
+- **Notification System** - Syslog (default) and optional email alerts
+- **Backward Compatible** - Works with existing v1.x installations without changes
 
 ## Quick Start
 
