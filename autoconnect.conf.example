@@ -1,0 +1,79 @@
+# AllStar Auto-Connect Configuration File Example
+#
+# Copy this file to one of these locations to use:
+#   ~/.autoconnect.conf       (user config, highest priority)
+#   /etc/autoconnect.conf     (system-wide config)
+#
+# Script will read in this order:
+#   1. AUTOCONNECT_CONFIG environment variable
+#   2. ~/.autoconnect.conf (user home directory)
+#   3. /etc/autoconnect.conf (system directory)
+#   4. Script defaults (if no config file found)
+#
+# Values in this file override script defaults but not environment variables
+# Keep format as: key=value (no spaces around equals unless quoted)
+#
+
+# ============================================================================
+# NODE CONFIGURATION
+# ============================================================================
+
+# Local AllStar node ID running this script
+ORIGIN_NODE_ID=12345
+
+# Remote AllStar node to maintain connection with
+DEST_NODE_ID=54321
+
+
+# ============================================================================
+# PATH CONFIGURATION
+# ============================================================================
+
+# Directory for log files and state management
+# Script will auto-create if missing
+LOG_DIR=/var/log/allstar
+
+# Path to asterisk binary
+# Adjust if asterisk is installed in different location
+ASTERISK_BIN=/usr/sbin/asterisk
+
+
+# ============================================================================
+# BEHAVIOR CONFIGURATION
+# ============================================================================
+
+# Maximum number of reconnection attempts before giving up
+# Script will stop retrying after this many attempts
+# Default: 3
+MAX_RETRIES=3
+
+# Timeout for asterisk commands (seconds)
+# Prevents script from hanging if asterisk socket is unresponsive
+# Default: 10
+ASTERISK_TIMEOUT=10
+
+# Delay after reconnect command before verifying (seconds)
+# Allows time for connection to establish before checking status
+# Default: 5
+VERIFY_DELAY=5
+
+
+# ============================================================================
+# NOTIFICATION CONFIGURATION
+# ============================================================================
+
+# Send notifications to syslog (recommended for servers)
+# Values: true or false
+# Default: true
+ENABLE_SYSLOG=true
+
+# Send email on persistent failures (optional)
+# Requires 'mail' command installed and configured
+# Values: true or false
+# Default: false
+ENABLE_EMAIL=false
+
+# Email address for failure notifications
+# Only used if ENABLE_EMAIL is true
+# Leave blank to disable
+EMAIL_ADDRESS=admin@example.com

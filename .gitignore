@@ -1,0 +1,61 @@
+# AllStar Auto-Connect Script - Git Ignore Rules
+
+# Log Files
+*.log
+cron_check.txt
+autoconnect_summary.log
+
+# State Files
+retry_state.txt
+PERSISTENT_FAILURE
+autoconnect.lock
+
+# Configuration Files (Don't commit user-specific configs)
+.autoconnect.conf
+autoconnect.conf
+/var/log/allstar/
+
+# OS-Specific Files
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+*.swo
+*~
+.vim/
+.vscode/
+
+# Backup Files
+*.bak
+*.backup
+*.orig
+*.swp
+*~
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+
+# IDE/Editor Files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS Temporary
+Thumbs.db
+ehthumbs.db
+
+# Development/Testing
+test_*.sh
+debug/
+*.test
+
+# Do NOT ignore these important files
+!README.md
+!INSTALL.md
+!CHANGELOG.md
+!TECHNICAL_OVERVIEW.md
+!autoconnect
+!autoconnect.conf.example

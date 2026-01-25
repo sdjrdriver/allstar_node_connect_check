@@ -1,60 +1,492 @@
 #!/bin/bash
 
-# Configuration Variables - Set these before running the script
+################################################################################
+# AllStar Node Auto-Connect Script v2.0.0
+#
+# Purpose: Monitor and maintain connections between AllStar nodes with
+#          automatic reconnection attempts and structured logging.
+#
+# Usage: autoconnect
+#        Can be run from cron or manually for monitoring
+#
+# Configuration: Edit variables below or use external config file
+#
+################################################################################
 
-# Directory path where logs and other files will be stored
-# Example: LOG_DIR="/usr/as_node_chk"
-LOG_DIR="/path/to/your/directory"  # <-- Replace with your desired path
+set -euo pipefail
 
-# AllStar Node IDs
-ORIGIN_NODE_ID="<orig_node>"  # <-- Replace with the origin AllStar node ID
-DEST_NODE_ID="<dest_node>"    # <-- Replace with the destination AllStar node ID
+# ============================================================================
+# CONFIGURATION SECTION
+# ============================================================================
 
-# Check if LOG_DIR is set and exists
-if [[ -z "$LOG_DIR" || ! -d "$LOG_DIR" ]]; then
-  echo "ERROR: LOG_DIR is not set correctly or the directory does not exist."
-  echo "Please set LOG_DIR to a valid directory in the script."
-  exit 1
-fi
+# Directory path where logs and state files will be stored
+# Example: LOG_DIR="/var/log/allstar" or "/usr/as_node_chk"
+LOG_DIR="${LOG_DIR:-/path/to/your/directory}"
 
-# Check if ORIGIN_NODE_ID and DEST_NODE_ID are set
-if [[ -z "$ORIGIN_NODE_ID" || -z "$DEST_NODE_ID" ]]; then
-  echo "ERROR: ORIGIN_NODE_ID or DEST_NODE_ID is not set."
-  echo "Please set both ORIGIN_NODE_ID and DEST_NODE_ID in the script."
-  exit 1
-fi
+# AllStar Node IDs (must be numeric)
+# The origin node is the local node running this script
+# The destination node is the remote node to connect to
+ORIGIN_NODE_ID="${ORIGIN_NODE_ID:-<orig_node>}"
+DEST_NODE_ID="${DEST_NODE_ID:-<dest_node>}"
+
+# Path to asterisk binary
+# Override with ASTERISK_BIN env var if needed (e.g., /usr/bin/asterisk)
+ASTERISK_BIN="${ASTERISK_BIN:-/usr/sbin/asterisk}"
+
+# Timeout for asterisk commands (seconds)
+# Prevents hanging if asterisk socket is unresponsive
+ASTERISK_TIMEOUT="${ASTERISK_TIMEOUT:-10}"
+
+# Delay after reconnect command before verifying connection (seconds)
+VERIFY_DELAY="${VERIFY_DELAY:-5}"
+
+# Maximum number of reconnection attempts before giving up
+MAX_RETRIES="${MAX_RETRIES:-3}"
+
+# Notification settings (optional, opt-in)
+ENABLE_SYSLOG="${ENABLE_SYSLOG:-true}"
+ENABLE_EMAIL="${ENABLE_EMAIL:-false}"
+EMAIL_ADDRESS="${EMAIL_ADDRESS:-}"
+
+# ============================================================================
+# INTERNAL VARIABLES
+# ============================================================================
 
 # Log file paths
-CRON_CHECK_FILE="$LOG_DIR/cron_check.txt"
+LOG_FILE="$LOG_DIR/autoconnect.log"
+SUMMARY_LOG="$LOG_DIR/autoconnect_summary.log"
+LEGACY_LOG="$LOG_DIR/cron_check.txt"
+RETRY_STATE_FILE="$LOG_DIR/retry_state.txt"
+LOCK_FILE="$LOG_DIR/autoconnect.lock"
 
-# Check if required log files exist
-if [[ ! -f "$CRON_CHECK_FILE" ]]; then
-  echo "ERROR: $CRON_CHECK_FILE does not exist."
-  echo "Please ensure that the required files are available in the LOG_DIR."
-  exit 1
-fi
+# Metadata for logging (will be populated during execution)
+EXECUTION_START=$(date +%s)
 
-date >> $LOG_DIR/cron_check.txt
-echo “Checking if connected to the hub”
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
 
-CHK=$(\asterisk -rx "rpt nodes $ORIGIN_NODE_ID" | grep -c "$DEST_NODE_ID")
-echo $CHK >> $LOG_DIR/cron_check.txt
+# Log entry with structured format
+# Arguments: LEVEL MESSAGE [METADATA]
+# Levels: DEBUG, INFO, WARNING, ERROR, SUCCESS
+log_entry() {
+  local level="$1"
+  local message="$2"
+  local metadata="${3:-}"
+  local timestamp
 
-if [ $CHK -eq 1 ]
-then
-   echo “OK, Connected.”
-   echo “OK, connected.” >> $LOG_DIR/cron_check.txt
+  # Use ISO 8601 format for consistency
+  timestamp=$(date -Iseconds)
+
+  # Format: [TIMESTAMP] [LEVEL] Message | metadata
+  local log_line="[$timestamp] [$level] $message"
+
+  if [ -n "$metadata" ]; then
+    log_line="$log_line | $metadata"
+  fi
+
+  # Append to main log file
+  if [ -w "$LOG_FILE" ] 2>/dev/null; then
+    echo "$log_line" >> "$LOG_FILE"
+  fi
+
+  # Also log to syslog if enabled
+  if [ "$ENABLE_SYSLOG" = "true" ]; then
+    notify_syslog "$level" "$message"
+  fi
+
+  # Output to stdout if running interactively (not in cron)
+  if [ -t 1 ] 2>/dev/null; then
+    echo "$log_line"
+  fi
+}
+
+# Wrapper for asterisk commands with timeout and error handling
+# Arguments: COMMAND (e.g., "rpt nodes 12345")
+# Returns: 0 on success, non-zero on failure
+asterisk_cmd() {
+  local cmd="$1"
+  local output
+  local exit_code=0
+
+  # Execute with timeout, capture stderr
+  output=$(timeout "$ASTERISK_TIMEOUT" "$ASTERISK_BIN" -rx "$cmd" 2>&1) || exit_code=$?
+
+  # Handle timeout (exit code 124)
+  if [ $exit_code -eq 124 ]; then
+    echo "TIMEOUT: Command exceeded ${ASTERISK_TIMEOUT}s: $cmd"
+    return 124
+  fi
+
+  # Handle command execution errors
+  if [ $exit_code -ne 0 ]; then
+    echo "ERROR: Asterisk command failed (exit $exit_code): $cmd"
+    if [ -n "$output" ]; then
+      echo "$output"
+    fi
+    return "$exit_code"
+  fi
+
+  # Return the command output for processing
+  echo "$output"
+  return 0
+}
+
+# Acquire lock to prevent concurrent execution
+# Returns: 0 on success, 1 if already running
+acquire_lock() {
+  local pid
+
+  # Check if lock file exists
+  if [ -f "$LOCK_FILE" ]; then
+    pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
+
+    # Check if the PID is still running
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "ERROR: Another instance is already running (PID: $pid)"
+      return 1
+    else
+      # Stale lock file, remove it
+      rm -f "$LOCK_FILE" 2>/dev/null || true
+    fi
+  fi
+
+  # Create lock file with current PID
+  echo $$ > "$LOCK_FILE"
+
+  # Setup trap to remove lock on exit (successful or not)
+  trap "rm -f '$LOCK_FILE'; exit" EXIT INT TERM
+
+  return 0
+}
+
+# Initialize logging directory and files
+initialize_logging() {
+  # Create log directory if it doesn't exist
+  if [ ! -d "$LOG_DIR" ]; then
+    if mkdir -p "$LOG_DIR" 2>/dev/null; then
+      log_entry "INFO" "Created log directory: $LOG_DIR"
+    else
+      echo "ERROR: Cannot create log directory: $LOG_DIR"
+      return 2
+    fi
+  fi
+
+  # Create main log file if it doesn't exist
+  if [ ! -f "$LOG_FILE" ]; then
+    if touch "$LOG_FILE" 2>/dev/null; then
+      log_entry "INFO" "Created log file: $LOG_FILE"
+    else
+      echo "ERROR: Cannot create log file: $LOG_FILE"
+      return 2
+    fi
+  fi
+
+  # Create summary log if it doesn't exist
+  if [ ! -f "$SUMMARY_LOG" ]; then
+    touch "$SUMMARY_LOG" 2>/dev/null || true
+  fi
+
+  # Create legacy log for backward compatibility
+  if [ ! -f "$LEGACY_LOG" ]; then
+    touch "$LEGACY_LOG" 2>/dev/null || true
+  fi
+
+  # Verify we have write permissions
+  if [ ! -w "$LOG_FILE" ]; then
+    echo "ERROR: No write permission for log file: $LOG_FILE"
+    return 2
+  fi
+
+  return 0
+}
+
+# Validate configuration values
+validate_configuration() {
+  local errors=0
+
+  # Validate LOG_DIR is set and writable
+  if [ -z "$LOG_DIR" ]; then
+    echo "ERROR: LOG_DIR is not set"
+    errors=$((errors + 1))
+  elif [[ "$LOG_DIR" =~ [[:space:]] ]]; then
+    echo "ERROR: LOG_DIR contains spaces (not allowed): '$LOG_DIR'"
+    errors=$((errors + 1))
+  elif [ ! -d "$LOG_DIR" ] && ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    echo "ERROR: Cannot create LOG_DIR: $LOG_DIR"
+    errors=$((errors + 1))
+  fi
+
+  # Validate ORIGIN_NODE_ID is set and numeric
+  if [ -z "$ORIGIN_NODE_ID" ] || [ "$ORIGIN_NODE_ID" = "<orig_node>" ]; then
+    echo "ERROR: ORIGIN_NODE_ID is not set"
+    errors=$((errors + 1))
+  elif ! [[ "$ORIGIN_NODE_ID" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: ORIGIN_NODE_ID must be numeric: '$ORIGIN_NODE_ID'"
+    errors=$((errors + 1))
+  fi
+
+  # Validate DEST_NODE_ID is set and numeric
+  if [ -z "$DEST_NODE_ID" ] || [ "$DEST_NODE_ID" = "<dest_node>" ]; then
+    echo "ERROR: DEST_NODE_ID is not set"
+    errors=$((errors + 1))
+  elif ! [[ "$DEST_NODE_ID" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: DEST_NODE_ID must be numeric: '$DEST_NODE_ID'"
+    errors=$((errors + 1))
+  fi
+
+  # Validate ASTERISK_BIN exists and is executable
+  if [ ! -x "$ASTERISK_BIN" ]; then
+    echo "ERROR: Asterisk binary not found or not executable: $ASTERISK_BIN"
+    errors=$((errors + 1))
+  fi
+
+  # Validate timeout is numeric
+  if ! [[ "$ASTERISK_TIMEOUT" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: ASTERISK_TIMEOUT must be numeric: '$ASTERISK_TIMEOUT'"
+    errors=$((errors + 1))
+  fi
+
+  # Validate max retries is numeric
+  if ! [[ "$MAX_RETRIES" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: MAX_RETRIES must be numeric: '$MAX_RETRIES'"
+    errors=$((errors + 1))
+  fi
+
+  if [ $errors -gt 0 ]; then
+    echo "Configuration validation failed with $errors error(s)"
+    return 2
+  fi
+
+  return 0
+}
+
+# Read current retry state from file
+# Returns: retry count (0 if no state file exists)
+read_retry_state() {
+  if [ ! -f "$RETRY_STATE_FILE" ]; then
+    return 0
+  fi
+
+  local state
+  state=$(cat "$RETRY_STATE_FILE" 2>/dev/null || echo "")
+
+  if [ -z "$state" ]; then
+    return 0
+  fi
+
+  # Parse format: timestamp:attempt_count:status
+  local attempt_count
+  attempt_count=$(echo "$state" | cut -d: -f2 || echo "0")
+
+  if [[ "$attempt_count" =~ ^[0-9]+$ ]]; then
+    return "$attempt_count"
+  fi
+
+  return 0
+}
+
+# Update retry state file with current attempt
+# Arguments: ATTEMPT_COUNT STATUS
+update_retry_state() {
+  local attempt_count="$1"
+  local status="${2:-RECONNECTING}"
+  local timestamp
+
+  timestamp=$(date +%s)
+
+  # Format: timestamp:attempt_count:status
+  echo "${timestamp}:${attempt_count}:${status}" > "$RETRY_STATE_FILE"
+}
+
+# Reset retry state (remove state file on successful connection)
+reset_retry_state() {
+  rm -f "$RETRY_STATE_FILE" 2>/dev/null || true
+}
+
+# Check if maximum retries have been exceeded
+# Returns: 0 if max retries exceeded, 1 otherwise
+is_max_retries_exceeded() {
+  local attempt_count
+  attempt_count=$(read_retry_state)
+
+  if [ "$attempt_count" -ge "$MAX_RETRIES" ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+# Send notification via syslog
+notify_syslog() {
+  local level="$1"
+  local message="$2"
+
+  if command -v logger >/dev/null 2>&1; then
+    # Convert our log levels to syslog levels
+    local syslog_level="info"
+    case "$level" in
+      ERROR|CRITICAL) syslog_level="err" ;;
+      WARNING)        syslog_level="warning" ;;
+      SUCCESS)        syslog_level="info" ;;
+      *)              syslog_level="info" ;;
+    esac
+
+    logger -t "autoconnect" -p "user.$syslog_level" "$message" 2>/dev/null || true
+  fi
+}
+
+# Send notification via email (for persistent failures)
+notify_email() {
+  local subject="$1"
+  local message="$2"
+
+  if [ "$ENABLE_EMAIL" = "true" ] && [ -n "$EMAIL_ADDRESS" ]; then
+    if command -v mail >/dev/null 2>&1; then
+      echo "$message" | mail -s "$subject" "$EMAIL_ADDRESS" 2>/dev/null || true
+    fi
+  fi
+}
+
+# Create failure flag file for external monitoring systems
+create_failure_flag() {
+  local flag_file="$LOG_DIR/PERSISTENT_FAILURE"
+  echo "$(date -Iseconds): Max retries exceeded | Origin: $ORIGIN_NODE_ID | Dest: $DEST_NODE_ID" > "$flag_file"
+}
+
+# ============================================================================
+# CORE LOGIC FUNCTIONS
+# ============================================================================
+
+# Check if nodes are currently connected
+# Returns: 0 if connected, 1 if disconnected, 2 if error
+check_connection() {
+  local nodes_output
+  local exit_code
+
+  # Query asterisk for node connections
+  nodes_output=$(asterisk_cmd "rpt nodes $ORIGIN_NODE_ID" 2>&1) || exit_code=$?
+
+  if [ ${exit_code:-0} -ne 0 ]; then
+    log_entry "ERROR" "Failed to query node status" "command=rpt nodes, exit_code=${exit_code:-unknown}"
+    return 2
+  fi
+
+  # Check if destination node ID is in the output
+  if echo "$nodes_output" | grep -q "$DEST_NODE_ID"; then
+    return 0  # Connected
+  else
+    return 1  # Disconnected
+  fi
+}
+
+# Attempt to reconnect nodes
+# Arguments: ATTEMPT_NUMBER
+# Returns: 0 if successful, 1 if failed
+attempt_reconnection() {
+  local attempt_num="$1"
+  local reconnect_output
+  local exit_code=0
+
+  log_entry "INFO" "Attempting reconnection" "origin=$ORIGIN_NODE_ID, dest=$DEST_NODE_ID, attempt=$attempt_num/$MAX_RETRIES"
+
+  # Update retry state before attempting
+  update_retry_state "$attempt_num" "RECONNECTING"
+
+  # Execute reconnect command
+  reconnect_output=$(asterisk_cmd "rpt cmd $ORIGIN_NODE_ID ilink 3 $DEST_NODE_ID" 2>&1) || exit_code=$?
+
+  if [ $exit_code -ne 0 ]; then
+    log_entry "ERROR" "Reconnect command failed" "attempt=$attempt_num/$MAX_RETRIES, exit_code=$exit_code"
+    return 1
+  fi
+
+  # Wait for connection to establish
+  log_entry "DEBUG" "Waiting $VERIFY_DELAY seconds for connection to establish"
+  sleep "$VERIFY_DELAY"
+
+  # Verify connection was successful
+  if check_connection; then
+    log_entry "SUCCESS" "Reconnection verified successful" "attempt=$attempt_num/$MAX_RETRIES"
+    reset_retry_state
+    return 0
+  else
+    log_entry "WARNING" "Reconnect command executed but connection not verified" "attempt=$attempt_num/$MAX_RETRIES"
+    return 1
+  fi
+}
+
+# Main logic flow
+main() {
+  log_entry "INFO" "AllStar auto-connect check started"
+
+  # Check current connection status
+  check_connection
+  local conn_status=$?
+
+  if [ $conn_status -eq 0 ]; then
+    # Already connected - all good
+    log_entry "INFO" "Nodes are connected" "origin=$ORIGIN_NODE_ID, dest=$DEST_NODE_ID"
+    reset_retry_state
+    rm -f "$LOG_DIR/PERSISTENT_FAILURE" 2>/dev/null || true
+    return 0
+
+  elif [ $conn_status -eq 2 ]; then
+    # Error querying connection status
+    log_entry "ERROR" "Cannot verify connection status"
+    return 4
+
+  else
+    # Connection is down - attempt reconnection
+    log_entry "WARNING" "Nodes are disconnected" "origin=$ORIGIN_NODE_ID, dest=$DEST_NODE_ID"
+
+    # Check if we've already exceeded max retries
+    if is_max_retries_exceeded; then
+      log_entry "ERROR" "Maximum reconnection attempts exceeded" "attempts=$MAX_RETRIES"
+      create_failure_flag
+      notify_email "AllStar Node Failure" "Node $ORIGIN_NODE_ID failed to reconnect to $DEST_NODE_ID after $MAX_RETRIES attempts"
+      return 1
+    fi
+
+    # Get current attempt number
+    local attempt_num
+    attempt_num=$(($(read_retry_state) + 1))
+
+    # Attempt reconnection
+    if attempt_reconnection "$attempt_num"; then
+      return 0  # Success
+    else
+      # Reconnection failed, but under max retries
+      return 1  # Will retry next time
+    fi
+  fi
+}
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+# Validate configuration before proceeding
+validate_configuration || exit 2
+
+# Acquire lock to prevent concurrent execution
+acquire_lock || exit 3
+
+# Initialize logging system
+initialize_logging || exit 2
+
+# Log startup information
+log_entry "DEBUG" "Script initialized" "version=2.0.0, asterisk_bin=$ASTERISK_BIN"
+
+# Execute main logic
+main
+exit_code=$?
+
+# Log completion
+if [ $exit_code -eq 0 ]; then
+  log_entry "INFO" "Script completed successfully"
 else
-   echo “Reconnecting.”
-   echo “Reconnecting.” >> $LOG_DIR/cron_check.txt
-   /usr/sbin/asterisk -rx "rpt cmd $ORIGIN_NODE_ID ilink 3 $DEST_NODE_ID"
+  log_entry "WARNING" "Script completed with exit code $exit_code"
 fi
 
-# Example of script logic:
-echo "Starting AllStar node check..."
-echo "Origin Node: $ORIGIN_NODE_ID"
-echo "Destination Node: $DEST_NODE_ID"
-
-# Add your logic here
-
-echo "Script completed successfully."
+exit $exit_code
