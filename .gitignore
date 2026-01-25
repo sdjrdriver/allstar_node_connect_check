@@ -51,6 +51,7 @@ ehthumbs.db
 test_*.sh
 debug/
 *.test
+.claude
 
 # Do NOT ignore these important files
 !README.md
